@@ -54,7 +54,7 @@ async def fetch_funding_rates():
                     break
             
             if bingx_match and b_data.get('fundingRate') is not None and bingx_match.get('fundingRate') is not None:
-                rate_bybit = float(b_data['fundingRate']) * 100   выражаем в %
+                rate_bybit = float(b_data['fundingRate']) * 100   
                 rate_bingx = float(bingx_match['fundingRate']) * 100
 
                 spread = abs(rate_bybit - rate_bingx)
