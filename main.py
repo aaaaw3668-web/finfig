@@ -19,8 +19,8 @@ if not TELEGRAM_BOT_TOKEN:
     exit(1)
 
 # Константы
-FUNDING_THRESHOLD_PCT = -1.0      # Порог экстремального фандинга (<= -1%)
-CHECK_INTERVAL_SECONDS = 60       # Интервал проверки (каждую минуту)
+FUNDING_THRESHOLD_PCT = -0.5      # Порог экстремального фандинга (<= -1%)
+CHECK_INTERVAL_SECONDS = 30       # Интервал проверки (каждую минуту)
 ALERT_COOLDOWN_SECONDS = 3600     # Кулдаун на повторное уведомление по той же монете (1 час)
 
 LAST_CHAT_ID = None
