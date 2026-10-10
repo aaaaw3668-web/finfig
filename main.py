@@ -18,146 +18,125 @@ if not TELEGRAM_BOT_TOKEN:
     print("✗ Ошибка: TELEGRAM_BOT_TOKEN не найден в переменных окружения!")
     exit(1)
 
-# ==================== НАСТРОЙКИ ПО УМОЛЧАНИЮ ====================
-FUNDING_THRESHOLD_PCT = -0.5        # Порог отрицательного фандинга
-DEFAULT_MIN_OI_GROWTH = 1.0         # Минимальный рост ОИ за 5м в % (положительный)
-DEFAULT_MIN_24H_TREND = 0.0         # Нижняя граница положительного суточного тренда 24h
-DEFAULT_MAX_24H_TREND = 10.0        # Верхняя граница суточного тренда 24h
-
-CHECK_INTERVAL_SECONDS = 10         # Частота сканирования рынка
-ALERT_COOLDOWN_SECONDS = 600        # Кулдаун на повторный алерт по монете (10 минут)
-TIME_WINDOW = 300                   # Окно анализа: 5 минут (300 сек)
+# Константы и глобальное состояние
+FUNDING_THRESHOLD_PCT = -0.5      # Значение по умолчанию
+CHECK_INTERVAL_SECONDS = 30       # Интервал проверки (каждые полминуты)
+ALERT_COOLDOWN_SECONDS = 3600     # Кулдаун на повторное уведомление (1 час)
 
 LAST_CHAT_ID = None
 
-# Хранилище исторических данных для расчета роста ОИ: symbol -> {'oi': [...]}
-historical_data = {}
-sent_alerts = {}  # symbol -> timestamp последнего алерта
+# Кэш отправленных уведомлений: exchange_symbol -> timestamp
+sent_alerts = {}
 
-# Инициализация CCXT клиента только для Bybit
-exchange = ccxt.bybit({'enableRateLimit': True})
+# Инициализация CCXT клиента для Bybit
+exchanges = {
+    'Bybit': ccxt.bybit({'enableRateLimit': True})
+}
 
 
 def parse_symbol(symbol_str: str) -> str:
     """Приводит тикер к виду без слэша (например, BTCUSDT)"""
     if not symbol_str:
         return ""
+    # Сначала убираем суффиксы после двоеточия (если есть у фьючерсов), затем удаляем слэш
     clean_sym = symbol_str.split(':')[0]
     return clean_sym.replace('/', '')
 
 
-def calculate_change(old, new):
-    if old == 0:
-        return 0.0
-    return ((new - old) / old) * 100
-
-
 def get_minutes_to_next_funding(ticker_data: dict) -> float:
+    """Возвращает количество минут, оставшееся до следующей выплаты фандинга."""
     next_time = ticker_data.get('fundingTimestamp') or ticker_data.get('nextFundingTime')
     if not next_time:
         return 0.0
+    
     now_ms = time.time() * 1000
     diff_ms = next_time - now_ms
     return max(0.0, diff_ms / (1000 * 60))
 
 
-def filter_duplicate_alert(symbol):
-    """Проверка кулдауна на повторный алерт для монеты"""
+async def fetch_exchange_funding(exchange_name: str, exchange_client):
+    """Сканирует биржу на предмет фандинга <= FUNDING_THRESHOLD_PCT"""
+    try:
+        tickers = await exchange_client.fetch_funding_rates()
+        extreme_funding_list = []
+        
+        for sym, data in tickers.items():
+            # Проверяем, что это пара с USDT
+            if 'USDT' in sym:
+                base_sym = parse_symbol(sym)
+                rate = data.get('fundingRate')
+                
+                if base_sym.endswith('USDT') and rate is not None:
+                    rate_pct = float(rate) * 100
+                    
+                    # Фильтр по динамическому порогу
+                    if rate_pct <= FUNDING_THRESHOLD_PCT:
+                        mins_left = get_minutes_to_next_funding(data)
+                        extreme_funding_list.append({
+                            'exchange': exchange_name,
+                            'symbol': base_sym,
+                            'rate': rate_pct,
+                            'mins_left': mins_left
+                        })
+                    
+        return extreme_funding_list
+    except Exception as e:
+        logger.error(f"Ошибка при запросе данных с {exchange_name}: {e}")
+        return []
+
+
+def filter_duplicate_alerts(alerts):
+    """Фильтрация повторных одинаковых уведомлений с учетом кулдауна"""
     now = time.time()
-    if symbol in sent_alerts:
-        if now - sent_alerts[symbol] < ALERT_COOLDOWN_SECONDS:
-            return False
-    sent_alerts[symbol] = now
-    return True
+    fresh_alerts = []
+
+    # Очистка устаревших записей
+    expired_keys = [k for k, timestamp in sent_alerts.items() if now - timestamp > ALERT_COOLDOWN_SECONDS]
+    for k in expired_keys:
+        del sent_alerts[k]
+
+    for alert in alerts:
+        alert_key = f"{alert['exchange']}_{alert['symbol']}"
+        if alert_key not in sent_alerts:
+            sent_alerts[alert_key] = now
+            fresh_alerts.append(alert)
+
+    return fresh_alerts
 
 
 async def background_scanner(application):
-    """Фоновый цикл проверки рынка Bybit (Положительный тренд 24h, Рост ОИ за 5м, Фандинг)"""
+    """Фоновый цикл проверки экстремального фандинга на Bybit"""
     await asyncio.sleep(3)
     
     while True:
-        try:
-            logger.info("Сканирование рынка Bybit (Положительный тренд + Рост ОИ + Фандинг)...")
+        logger.info(f"Сканирование фандинга на Bybit (порог <= {FUNDING_THRESHOLD_PCT}%)...")
+        
+        all_alerts = []
+        for name, client in exchanges.items():
+            exchange_alerts = await fetch_exchange_funding(name, client)
+            all_alerts.extend(exchange_alerts)
+        
+        if all_alerts:
+            # Сортируем от самого низкого (самого отрицательного)
+            all_alerts.sort(key=lambda x: x['rate'])
             
-            # Загружаем тикеры
-            tickers = await exchange.fetch_tickers()
-            # Загружаем данные по открытому интересу
-            try:
-                open_interests = await exchange.fetch_open_interests()
-            except Exception:
-                open_interests = {}
+            new_alerts = filter_duplicate_alerts(all_alerts)
 
-            timestamp = int(time.time())
-
-            for sym, ticker in tickers.items():
-                if 'USDT' not in sym or ':' in sym:
-                    continue
+            if new_alerts and LAST_CHAT_ID:
+                msg = f"🚨 **Отрицательный фандинг обнаружен!** (≤ {FUNDING_THRESHOLD_PCT}%)\n\n"
                 
-                base_sym = parse_symbol(sym)
-                price = ticker.get('last')
-                trend_24h_pct = ticker.get('percentage')
-                funding_rate = ticker.get('fundingRate')
-                
-                if not price or price <= 0:
-                    continue
+                for item in new_alerts:
+                    msg += (
+                        f"🔹 Биржа: **{item['exchange']}**\n"
+                        f"🪙 Монета: `{item['symbol']}`\n"
+                        f"📉 Ставка: `{item['rate']:.4f}%`\n"
+                        f"⏳ До выплаты: ~`{item['mins_left']:.0f} мин`\n\n"
+                    )
 
-                # Расчет тренда 24h в процентах, если percentage недоступен
-                if trend_24h_pct is None:
-                    prev_p = ticker.get('previousClose')
-                    trend_24h_pct = calculate_change(prev_p, price) if prev_p else 0.0
-
-                funding_rate_pct = float(funding_rate) * 100 if funding_rate is not None else 0.0
-
-                # 1. Фильтр по отрицательному фандингу
-                if funding_rate_pct > FUNDING_THRESHOLD_PCT:
-                    continue
-
-                # 2. Фильтр по ПОЛОЖИТЕЛЬНОМУ суточному тренду
-                if not (DEFAULT_MIN_24H_TREND <= trend_24h_pct <= DEFAULT_MAX_24H_TREND):
-                    continue
-
-                # Получаем текущий Open Interest в долларах/монетах
-                oi_data = open_interests.get(sym, {})
-                open_interest = oi_data.get('openInterestValue') or oi_data.get('openInterestAmount', 0) * price
-
-                if open_interest <= 0:
-                    continue
-
-                # Инициализация истории для монеты
-                if base_sym not in historical_data:
-                    historical_data[base_sym] = {'oi': []}
-
-                data = historical_data[base_sym]
-                data['oi'].append({'value': open_interest, 'timestamp': timestamp})
-
-                # Очищаем данные за пределами 5-минутного окна
-                data['oi'] = [x for x in data['oi'] if timestamp - x['timestamp'] <= TIME_WINDOW]
-
-                if len(data['oi']) > 1:
-                    # Расчет РОСТА ОИ от минимального значения за 5м (положительный прирост)
-                    min_oi = min(x['value'] for x in data['oi'])
-                    current_oi = data['oi'][-1]['value']
-                    oi_growth_pct = calculate_change(min_oi, current_oi)
-
-                    # 3. Условие ПОЛОЖИТЕЛЬНОГО роста ОИ за 5м
-                    if oi_growth_pct >= DEFAULT_MIN_OI_GROWTH:
-                        if filter_duplicate_alert(base_sym) and LAST_CHAT_ID:
-                            mins_left = get_minutes_to_next_funding(ticker)
-                            msg = (
-                                f"🚀 **{base_sym}**: Рост ОИ + Положительный тренд!\n\n"
-                                f"🔹 Биржа: **Bybit**\n"
-                                f"📊 Рост ОИ (5м): `+{oi_growth_pct:.2f}%`\n"
-                                f"📈 Тренд 24h: `+{trend_24h_pct:.2f}%`\n"
-                                f"💸 Ставка фандинга: `{funding_rate_pct:.4f}%`\n"
-                                f"⏳ До выплаты: ~`{mins_left:.0f} мин`"
-                            )
-                            try:
-                                await application.bot.send_message(chat_id=LAST_CHAT_ID, text=msg, parse_mode="Markdown")
-                            except Exception as e:
-                                logger.error(f"Не удалось отправить уведомление в Telegram: {e}")
-
-        except Exception as e:
-            logger.error(f"Ошибка в фоновом сканере Bybit: {e}")
+                try:
+                    await application.bot.send_message(chat_id=LAST_CHAT_ID, text=msg, parse_mode="Markdown")
+                except Exception as e:
+                    logger.error(f"Не удалось отправить уведомление в Telegram: {e}")
 
         await asyncio.sleep(CHECK_INTERVAL_SECONDS)
 
@@ -166,21 +145,24 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global LAST_CHAT_ID
     LAST_CHAT_ID = update.effective_chat.id
     await update.message.reply_text(
-        "🤖 **Бот мониторинга Bybit (Рост ОИ + Положительный тренд + Фандинг) запущен!**\n\n"
-        f"Текущий порог фандинга: **≤ {FUNDING_THRESHOLD_PCT}%**\n"
-        f"Мин. рост ОИ (5м): **≥ +{DEFAULT_MIN_OI_GROWTH}%**\n"
-        f"Тренд 24h: от **+{DEFAULT_MIN_24H_TREND}%** до **+{DEFAULT_MAX_24H_TREND}%**\n\n"
-        "💡 Для изменения порога фандинга используйте команду:\n"
-        "`/set -0.8`",
+        "🤖 **Бот отслеживания фандинга Bybit запущен!**\n\n"
+        "🌐 Биржа: **Bybit**\n"
+        f"Текущий порог фандинга: **≤ {FUNDING_THRESHOLD_PCT}%**\n\n"
+        "💡 Для изменения порога используйте команду:\n"
+        "`/set -0.8` или `/set -1`",
         parse_mode="Markdown"
     )
 
 
 async def set_funding_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для установки нового порога фандинга."""
     global FUNDING_THRESHOLD_PCT
+    
     if not context.args:
         await update.message.reply_text(
-            f"⚠️ Укажите значение порога.\nТекущий порог: **{FUNDING_THRESHOLD_PCT}%**\nПример: `/set -0.8`",
+            f"⚠️ Пожалуйста, укажите значение порога в процентах.\n\n"
+            f"Текущий порог: **{FUNDING_THRESHOLD_PCT}%**\n"
+            f"Пример использования: `/set -0.8` или `/set -1.5`",
             parse_mode="Markdown"
         )
         return
@@ -188,26 +170,33 @@ async def set_funding_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         raw_val = context.args[0].replace(',', '.')
         new_val = float(raw_val)
+
         if new_val > 0:
             new_val = -new_val
 
         FUNDING_THRESHOLD_PCT = new_val
-        sent_alerts.clear()
+        sent_alerts.clear()  # Сбрасываем кэш
         
         await update.message.reply_text(
-            f"✅ Порог фандинга изменён на **≤ {FUNDING_THRESHOLD_PCT}%**",
+            f"✅ Порог фандинга успешно изменён на **≤ {FUNDING_THRESHOLD_PCT}%**\n"
+            f"Кэш ранее отправленных уведомлений сброшен.",
             parse_mode="Markdown"
         )
     except ValueError:
-        await update.message.reply_text("❌ Ошибка: укажите число. Пример: `/set -0.5`", parse_mode="Markdown")
+        await update.message.reply_text(
+            "❌ Ошибка: Укажите корректное число. Пример: `/set -0.5`",
+            parse_mode="Markdown"
+        )
 
 
 async def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
+    # Регистрация команд
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("set", set_funding_command))
 
+    # Запуск фонового сканера
     asyncio.create_task(background_scanner(app))
 
     print("Бот запущен...")
@@ -219,7 +208,8 @@ async def main():
         stop_signal = asyncio.Event()
         await stop_signal.wait()
     finally:
-        await exchange.close()
+        for client in exchanges.values():
+            await client.close()
 
 
 if __name__ == '__main__':
