@@ -38,10 +38,12 @@ exchanges = {
 
 
 def parse_symbol(symbol_str: str) -> str:
-    """Приводит тикер к стандартизированному виду (например, BTC/USDT)"""
+    """Приводит тикер к виду без слэша (например, BTCUSDT)"""
     if not symbol_str:
         return ""
-    return symbol_str.split(':')[0]
+    # Сначала убираем суффиксы после двоеточия (если есть у фьючерсов), затем удаляем слэш
+    clean_sym = symbol_str.split(':')[0]
+    return clean_sym.replace('/', '')
 
 
 def get_minutes_to_next_funding(ticker_data: dict) -> float:
@@ -62,21 +64,23 @@ async def fetch_exchange_funding(exchange_name: str, exchange_client):
         extreme_funding_list = []
         
         for sym, data in tickers.items():
-            base_sym = parse_symbol(sym)
-            rate = data.get('fundingRate')
-            
-            if base_sym.endswith('/USDT') and rate is not None:
-                rate_pct = float(rate) * 100
+            # Проверяем, что это пара с USDT
+            if 'USDT' in sym:
+                base_sym = parse_symbol(sym)
+                rate = data.get('fundingRate')
                 
-                # Фильтр по динамическому порогу
-                if rate_pct <= FUNDING_THRESHOLD_PCT:
-                    mins_left = get_minutes_to_next_funding(data)
-                    extreme_funding_list.append({
-                        'exchange': exchange_name,
-                        'symbol': base_sym,
-                        'rate': rate_pct,
-                        'mins_left': mins_left
-                    })
+                if base_sym.endswith('USDT') and rate is not None:
+                    rate_pct = float(rate) * 100
+                    
+                    # Фильтр по динамическому порогу
+                    if rate_pct <= FUNDING_THRESHOLD_PCT:
+                        mins_left = get_minutes_to_next_funding(data)
+                        extreme_funding_list.append({
+                            'exchange': exchange_name,
+                            'symbol': base_sym,
+                            'rate': rate_pct,
+                            'mins_left': mins_left
+                        })
                     
         return extreme_funding_list
     except Exception as e:
@@ -95,7 +99,6 @@ def filter_duplicate_alerts(alerts):
         del sent_alerts[k]
 
     for alert in alerts:
-        # Уникальный ключ для каждой биржи и монеты
         alert_key = f"{alert['exchange']}_{alert['symbol']}"
         if alert_key not in sent_alerts:
             sent_alerts[alert_key] = now
@@ -126,8 +129,6 @@ async def background_scanner(application):
                 msg = f"🚨 **Отрицательный фандинг обнаружен!** (≤ {FUNDING_THRESHOLD_PCT}%)\n\n"
                 
                 for item in new_alerts:
-                    # Название монеты обернуто в бэктики (`), что делает его моноширинным
-                    # В Telegram нажатие на такой текст копирует его в буфер обмена.
                     msg += (
                         f"🔹 Биржа: **{item['exchange']}**\n"
                         f"🪙 Монета: `{item['symbol']}`\n"
@@ -210,7 +211,6 @@ async def main():
         stop_signal = asyncio.Event()
         await stop_signal.wait()
     finally:
-        # Закрываем все сессии бирж при выходе
         for client in exchanges.values():
             await client.close()
 
