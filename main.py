@@ -25,11 +25,16 @@ ALERT_COOLDOWN_SECONDS = 3600     # Кулдаун на повторное ув�
 
 LAST_CHAT_ID = None
 
-# Кэш отправленных уведомлений: symbol -> timestamp
+# Кэш отправленных уведомлений: exchange_symbol -> timestamp
 sent_alerts = {}
 
-# Инициализация CCXT клиента Bybit
-bybit = ccxt.bybit({'enableRateLimit': True})
+# Инициализация CCXT клиентов для всех бирж
+exchanges = {
+    'Bybit': ccxt.bybit({'enableRateLimit': True}),
+    'Binance': ccxt.binance({'enableRateLimit': True}),
+    'OKX': ccxt.okx({'enableRateLimit': True}),
+    'BingX': ccxt.bingx({'enableRateLimit': True})
+}
 
 
 def parse_symbol(symbol_str: str) -> str:
@@ -50,10 +55,10 @@ def get_minutes_to_next_funding(ticker_data: dict) -> float:
     return max(0.0, diff_ms / (1000 * 60))
 
 
-async def fetch_extreme_funding():
-    """Сканирует Bybit на предмет фандинга <= FUNDING_THRESHOLD_PCT"""
+async def fetch_exchange_funding(exchange_name: str, exchange_client):
+    """Сканирует конкретную биржу на предмет фандинга <= FUNDING_THRESHOLD_PCT"""
     try:
-        tickers = await bybit.fetch_funding_rates()
+        tickers = await exchange_client.fetch_funding_rates()
         extreme_funding_list = []
         
         for sym, data in tickers.items():
@@ -67,6 +72,7 @@ async def fetch_extreme_funding():
                 if rate_pct <= FUNDING_THRESHOLD_PCT:
                     mins_left = get_minutes_to_next_funding(data)
                     extreme_funding_list.append({
+                        'exchange': exchange_name,
                         'symbol': base_sym,
                         'rate': rate_pct,
                         'mins_left': mins_left
@@ -74,7 +80,7 @@ async def fetch_extreme_funding():
                     
         return extreme_funding_list
     except Exception as e:
-        logger.error(f"Ошибка при запросе данных с Bybit: {e}")
+        logger.error(f"Ошибка при запросе данных с {exchange_name}: {e}")
         return []
 
 
@@ -89,34 +95,42 @@ def filter_duplicate_alerts(alerts):
         del sent_alerts[k]
 
     for alert in alerts:
-        symbol = alert['symbol']
-        if symbol not in sent_alerts:
-            sent_alerts[symbol] = now
+        # Уникальный ключ для каждой биржи и монеты
+        alert_key = f"{alert['exchange']}_{alert['symbol']}"
+        if alert_key not in sent_alerts:
+            sent_alerts[alert_key] = now
             fresh_alerts.append(alert)
 
     return fresh_alerts
 
 
 async def background_scanner(application):
-    """Фоновый цикл проверки экстремального фандинга"""
+    """Фоновый цикл проверки экстремального фандинга по всем биржам"""
     await asyncio.sleep(3)
     
     while True:
-        logger.info(f"Сканирование фандинга Bybit (порог <= {FUNDING_THRESHOLD_PCT}%)...")
-        alerts = await fetch_extreme_funding()
+        logger.info(f"Сканирование фандинга на всех биржах (порог <= {FUNDING_THRESHOLD_PCT}%)...")
         
-        if alerts:
+        all_alerts = []
+        for name, client in exchanges.items():
+            exchange_alerts = await fetch_exchange_funding(name, client)
+            all_alerts.extend(exchange_alerts)
+        
+        if all_alerts:
             # Сортируем от самого низкого (самого отрицательного)
-            alerts.sort(key=lambda x: x['rate'])
+            all_alerts.sort(key=lambda x: x['rate'])
             
-            new_alerts = filter_duplicate_alerts(alerts)
+            new_alerts = filter_duplicate_alerts(all_alerts)
 
             if new_alerts and LAST_CHAT_ID:
-                msg = f"🚨 **Отрицательный фандинг на Bybit!** (≤ {FUNDING_THRESHOLD_PCT}%)\n\n"
+                msg = f"🚨 **Отрицательный фандинг обнаружен!** (≤ {FUNDING_THRESHOLD_PCT}%)\n\n"
                 
                 for item in new_alerts:
+                    # Название монеты обернуто в бэктики (`), что делает его моноширинным
+                    # В Telegram нажатие на такой текст копирует его в буфер обмена.
                     msg += (
-                        f"🔹 **{item['symbol']}**\n"
+                        f"🔹 Биржа: **{item['exchange']}**\n"
+                        f"🪙 Монета: `{item['symbol']}`\n"
                         f"📉 Ставка: `{item['rate']:.4f}%`\n"
                         f"⏳ До выплаты: ~`{item['mins_left']:.0f} мин`\n\n"
                     )
@@ -133,7 +147,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global LAST_CHAT_ID
     LAST_CHAT_ID = update.effective_chat.id
     await update.message.reply_text(
-        "🤖 **Бот отслеживания фандинга Bybit запущен!**\n\n"
+        "🤖 **Мультибиржевой бот отслеживания фандинга запущен!**\n\n"
+        "🌐 Поддерживаемые биржи: **Bybit, Binance, OKX, BingX**\n"
         f"Текущий порог фандинга: **≤ {FUNDING_THRESHOLD_PCT}%**\n\n"
         "💡 Для изменения порога используйте команду:\n"
         "`/set -0.8` или `/set -1`",
@@ -158,12 +173,11 @@ async def set_funding_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         raw_val = context.args[0].replace(',', '.')
         new_val = float(raw_val)
 
-        # Если пользователь ввел положительное число, конвертируем в отрицательное (или оставляем проверку на <=)
         if new_val > 0:
             new_val = -new_val
 
         FUNDING_THRESHOLD_PCT = new_val
-        sent_alerts.clear()  # Сбрасываем кэш, чтобы заново прийти уведомления по новому порогу
+        sent_alerts.clear()  # Сбрасываем кэш
         
         await update.message.reply_text(
             f"✅ Порог фандинга успешно изменён на **≤ {FUNDING_THRESHOLD_PCT}%**\n"
@@ -196,7 +210,9 @@ async def main():
         stop_signal = asyncio.Event()
         await stop_signal.wait()
     finally:
-        await bybit.close()
+        # Закрываем все сессии бирж при выходе
+        for client in exchanges.values():
+            await client.close()
 
 
 if __name__ == '__main__':
