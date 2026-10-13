@@ -55,12 +55,26 @@ def get_minutes_to_next_funding(ticker_data: dict) -> float:
 
 
 async def fetch_exchange_funding(exchange_name: str, exchange_client):
-    """Сканирует биржу на предмет фандинга <= FUNDING_THRESHOLD_PCT"""
+    """Сканирует биржу на предмет фандинга <= FUNDING_THRESHOLD_PCT с фильтрацией по типу инструмента"""
     try:
+        # Убедимся, что рынки и их метаданные загружены
+        if not exchange_client.markets:
+            await exchange_client.load_markets()
+
         tickers = await exchange_client.fetch_funding_rates()
         extreme_funding_list = []
         
         for sym, data in tickers.items():
+            # Проверяем тип инструмента через метаданные биржи (исключаем акции, ETF и токенизированные активы)
+            market = exchange_client.markets.get(sym)
+            if market:
+                info = market.get('info', {})
+                symbol_type = info.get('symbolType', '').lower()
+                
+                # Если инструмент относится к акциям, ETF или xStocks — пропускаем
+                if symbol_type in ['stock', 'etf', 'xstocks', 'xstock']:
+                    continue
+
             # Проверяем, что это пара с USDT
             if 'USDT' in sym:
                 base_sym = parse_symbol(sym)
@@ -191,6 +205,13 @@ async def set_funding_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+
+    # Предзагрузка рынков для инициализации метаданных
+    for client in exchanges.values():
+        try:
+            await client.load_markets()
+        except Exception as e:
+            logger.error(f"Ошибка предварительной загрузки рынков: {e}")
 
     # Регистрация команд
     app.add_handler(CommandHandler("start", start_command))
