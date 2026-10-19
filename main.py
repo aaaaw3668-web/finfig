@@ -23,10 +23,10 @@ DEFAULT_MIN_24H_TREND = 1.0        # Нижняя граница суточно�
 DEFAULT_MAX_24H_TREND = 10.0       # Верхняя граница суточного тренда
 
 # --- Фильтр по суточному объему (в USDT) по умолчанию ---
-DEFAULT_MIN_24H_VOLUME_USDT = 1_000_000  # $1 млн ($1,000,000)
+DEFAULT_MIN_24H_VOLUME_USDT = 100_000  # $1 млн ($1,000,000)
 
 # --- Фильтр отрицательного фандинга по умолчанию ---
-DEFAULT_FUNDING_FILTER_ONLY_NEGATIVE = False  # True: только < 0%, False: выключен
+DEFAULT_FUNDING_FILTER_ONLY_NEGATIVE = True  # True: только < 0%, False: выключен
 
 # --- Черный список традиционных активов (Акции, ETF, CFD на Bybit) ---
 STOCKS_TICKERS = [
