@@ -23,7 +23,7 @@ DEFAULT_MIN_24H_TREND = -10.0        # Нижняя граница суточн�
 DEFAULT_MAX_24H_TREND =  0.0       # Верхняя граница суточного тренда
 
 # --- Фильтр по суточному объему (в USDT) по умолчанию ---
-DEFAULT_MIN_24H_VOLUME_USDT = 100_000  # $10 млн ($10,000,000)
+DEFAULT_MIN_24H_VOLUME_USDT = 1_000_000  # $10 млн ($10,000,000)
 
 # --- Фильтр отрицательного фандинга по умолчанию ---
 DEFAULT_FUNDING_FILTER_ONLY_NEGATIVE = False  # True: только < 0%, False: выключен
