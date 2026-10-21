@@ -42,9 +42,9 @@ STOCKS_TICKERS = [
 EXCLUDED_STOCKS = set(STOCKS_TICKERS) | {f"{t}USDT" for t in STOCKS_TICKERS}
 
 # --- Параметры опроса API и контроля ---
-TIME_WINDOW = 60 * 1              # Окно анализа: 5 минут (300 сек)
+TIME_WINDOW = 60 * 5              # Окно анализа: 5 минут (300 сек)
 POLL_INTERVAL = 5                # Частота запросов к API Bybit (раз в 10 секунд)
-COOLDOWN_MINUTES = 60             # Пауза между алертами по одной монете
+COOLDOWN_MINUTES = 10             # Пауза между алертами по одной монете
 DAILY_ALERT_LIMIT = 100           # Суточный лимит алертов на монету
 
 session = requests.Session()
