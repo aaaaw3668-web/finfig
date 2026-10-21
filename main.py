@@ -14,16 +14,16 @@ if not TELEGRAM_BOT_TOKEN:
     exit(1)
 
 # --- Настройки условия сигнала по умолчанию ---
-DEFAULT_MIN_PRICE_DROP = -0.15      # Верхняя граница падения цены от High (не слабее -1.0%)
-DEFAULT_MAX_PRICE_DROP = -0.50      # Нижняя граница падения цены от High (не сильнее -7.0%)
+DEFAULT_MIN_PRICE_DROP = -2      # Верхняя граница падения цены от High (не слабее -1.0%)
+DEFAULT_MAX_PRICE_DROP = -10      # Нижняя граница падения цены от High (не сильнее -7.0%)
 DEFAULT_MIN_OI_GROWTH = 0.5        # Порог роста ОИ от Low за 5м (не менее +0.5%)
 
 # --- Настройки диапазона тренда (24h) по умолчанию ---
 DEFAULT_MIN_24H_TREND = -10.0        # Нижняя граница суточного тренда
-DEFAULT_MAX_24H_TREND =  0.0       # Верхняя граница суточного тренда
+DEFAULT_MAX_24H_TREND =  10       # Верхняя граница суточного тренда
 
 # --- Фильтр по суточному объему (в USDT) по умолчанию ---
-DEFAULT_MIN_24H_VOLUME_USDT = 1_000_000  # $10 млн ($10,000,000)
+DEFAULT_MIN_24H_VOLUME_USDT = 100_000  # $10 млн ($10,000,000)
 
 # --- Фильтр отрицательного фандинга по умолчанию ---
 DEFAULT_FUNDING_FILTER_ONLY_NEGATIVE = False  # True: только < 0%, False: выключен
@@ -42,7 +42,7 @@ STOCKS_TICKERS = [
 EXCLUDED_STOCKS = set(STOCKS_TICKERS) | {f"{t}USDT" for t in STOCKS_TICKERS}
 
 # --- Параметры опроса API и контроля ---
-TIME_WINDOW = 60 * 30              # Окно анализа: 5 минут (300 сек)
+TIME_WINDOW = 60 * 1              # Окно анализа: 5 минут (300 сек)
 POLL_INTERVAL = 5                # Частота запросов к API Bybit (раз в 10 секунд)
 COOLDOWN_MINUTES = 60             # Пауза между алертами по одной монете
 DAILY_ALERT_LIMIT = 100           # Суточный лимит алертов на монету
