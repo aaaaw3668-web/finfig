@@ -14,7 +14,7 @@ if not TELEGRAM_BOT_TOKEN:
     exit(1)
 
 # --- Настройки условия сигнала по умолчанию ---
-DEFAULT_MIN_PRICE_RISE = 10
+DEFAULT_MIN_PRICE_RISE = 5
 DEFAULT_MAX_PRICE_RISE = 100
 
 # --- Настройки диапазона тренда (24h) по умолчанию ---
@@ -30,7 +30,7 @@ DEFAULT_FUNDING_FILTER_ONLY_NEGATIVE = False
 # --- Параметры опроса API и контроля ---
 TIME_WINDOW = 60 * 60
 POLL_INTERVAL = 5
-COOLDOWN_MINUTES = 15
+COOLDOWN_MINUTES = 60
 DAILY_ALERT_LIMIT = 100
 
 session = requests.Session()
