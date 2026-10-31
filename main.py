@@ -14,7 +14,7 @@ if not TELEGRAM_BOT_TOKEN:
     exit(1)
 
 # --- Настройки условия сигнала по умолчанию ---
-DEFAULT_MIN_PRICE_RISE = 5
+DEFAULT_MIN_PRICE_RISE = 10
 DEFAULT_MAX_PRICE_RISE = 100
 
 # --- Настройки диапазона тренда (24h) по умолчанию ---
