@@ -1,3 +1,4 @@
+
 import json
 import os
 import re
@@ -14,8 +15,12 @@ if not TELEGRAM_BOT_TOKEN:
     exit(1)
 
 # --- Настройки условия сигнала по умолчанию ---
-DEFAULT_MIN_PRICE_RISE = 5
+DEFAULT_MIN_PRICE_RISE = 10
 DEFAULT_MAX_PRICE_RISE = 100
+
+# --- Настройки падения цены ---
+DEFAULT_MIN_PRICE_DROP = 10
+DEFAULT_MAX_PRICE_DROP = 100
 
 # --- Настройки диапазона тренда (24h) по умолчанию ---
 DEFAULT_MIN_24H_TREND = -100
@@ -34,7 +39,10 @@ COOLDOWN_MINUTES = 60
 DAILY_ALERT_LIMIT = 100
 
 session = requests.Session()
-adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
+adapter = requests.adapters.HTTPAdapter(
+    pool_connections=20,
+    pool_maxsize=20
+)
 session.mount('https://', adapter)
 
 users = {
@@ -44,6 +52,8 @@ users = {
         'settings': {
             'min_price_rise': DEFAULT_MIN_PRICE_RISE,
             'max_price_rise': DEFAULT_MAX_PRICE_RISE,
+            'min_price_drop': DEFAULT_MIN_PRICE_DROP,
+            'max_price_drop': DEFAULT_MAX_PRICE_DROP,
             'min_24h_trend': DEFAULT_MIN_24H_TREND,
             'max_24h_trend': DEFAULT_MAX_24H_TREND,
             'min_24h_volume': DEFAULT_MIN_24H_VOLUME_USDT,
@@ -53,7 +63,10 @@ users = {
 }
 
 historical_data = {}
+
+# Отдельный кулдаун для роста и падения
 last_alert_time = {}
+
 data_lock = threading.Lock()
 
 
@@ -62,26 +75,32 @@ def get_ye_time():
     return datetime.now(timezone.utc) + timedelta(hours=5)
 
 
+def get_default_settings():
+    return {
+        'min_price_rise': DEFAULT_MIN_PRICE_RISE,
+        'max_price_rise': DEFAULT_MAX_PRICE_RISE,
+        'min_price_drop': DEFAULT_MIN_PRICE_DROP,
+        'max_price_drop': DEFAULT_MAX_PRICE_DROP,
+        'min_24h_trend': DEFAULT_MIN_24H_TREND,
+        'max_24h_trend': DEFAULT_MAX_24H_TREND,
+        'min_24h_volume': DEFAULT_MIN_24H_VOLUME_USDT,
+        'only_negative_funding': DEFAULT_FUNDING_FILTER_ONLY_NEGATIVE
+    }
+
+
 def get_user_settings(chat_id):
     if chat_id not in users:
-        return {
-            'min_price_rise': DEFAULT_MIN_PRICE_RISE,
-            'max_price_rise': DEFAULT_MAX_PRICE_RISE,
-            'min_24h_trend': DEFAULT_MIN_24H_TREND,
-            'max_24h_trend': DEFAULT_MAX_24H_TREND,
-            'min_24h_volume': DEFAULT_MIN_24H_VOLUME_USDT,
-            'only_negative_funding': DEFAULT_FUNDING_FILTER_ONLY_NEGATIVE
-        }
+        return get_default_settings()
 
     if 'settings' not in users[chat_id]:
-        users[chat_id]['settings'] = {
-            'min_price_rise': DEFAULT_MIN_PRICE_RISE,
-            'max_price_rise': DEFAULT_MAX_PRICE_RISE,
-            'min_24h_trend': DEFAULT_MIN_24H_TREND,
-            'max_24h_trend': DEFAULT_MAX_24H_TREND,
-            'min_24h_volume': DEFAULT_MIN_24H_VOLUME_USDT,
-            'only_negative_funding': DEFAULT_FUNDING_FILTER_ONLY_NEGATIVE
-        }
+        users[chat_id]['settings'] = get_default_settings()
+
+    else:
+        defaults = get_default_settings()
+
+        for key, value in defaults.items():
+            if key not in users[chat_id]['settings']:
+                users[chat_id]['settings'][key] = value
 
     return users[chat_id]['settings']
 
@@ -94,25 +113,31 @@ def get_alert_count(chat_id, symbol):
 
 def increment_alert_count(chat_id, symbol):
     if chat_id in users:
-        users[chat_id]['alert_counts'][symbol] = get_alert_count(chat_id, symbol) + 1
+        users[chat_id]['alert_counts'][symbol] = (
+            get_alert_count(chat_id, symbol) + 1
+        )
 
 
 def can_send_alert(chat_id, symbol):
     if chat_id not in users or not users[chat_id]['active']:
         return False
+
     if get_alert_count(chat_id, symbol) >= DAILY_ALERT_LIMIT:
         return False
+
     return True
 
 
 def calculate_change(old, new):
     if old == 0:
         return 0.0
+
     return ((new - old) / old) * 100
 
 
 def generate_links(symbol):
     encoded_symbol = urllib.parse.quote(symbol)
+
     return {
         'coinglass': f"https://www.coinglass.com/tv/Bybit_{encoded_symbol}",
         'tradingview': f"https://www.tradingview.com/chart/?symbol=BYBIT%3A{encoded_symbol}.P",
@@ -128,13 +153,19 @@ def send_telegram_notification(chat_id, message, symbol):
 
     increment_alert_count(chat_id, symbol)
     current_count = get_alert_count(chat_id, symbol)
+
     monospace_symbol = f"<code>{symbol}</code>"
 
     def wrap_numbers(text):
-        return re.sub(r'([+-]?\d+(?:\.\d+)?%)', r'<code>\1</code>', text)
+        return re.sub(
+            r'([+-]?\d+(?:\.\d+)?%)',
+            r'<code>\1</code>',
+            text
+        )
 
     message = wrap_numbers(message)
     links = generate_links(symbol)
+
     message_with_links = (
         f"{message}\n\n"
         f"🔗 <b>Быстрый анализ:</b>\n"
@@ -142,12 +173,20 @@ def send_telegram_notification(chat_id, message, symbol):
         f"• 📈 <a href='{links['tradingview']}'>TradingView</a>\n"
         f"• 💰 <a href='{links['binance']}'>Binance</a>\n"
         f"• ⚡ <a href='{links['bybit']}'>Bybit</a>\n\n"
-        f"📊 <b>Алертов по {monospace_symbol} сегодня:</b> <code>{current_count}/{DAILY_ALERT_LIMIT}</code>"
+        f"📊 <b>Алертов по {monospace_symbol} сегодня:</b> "
+        f"<code>{current_count}/{DAILY_ALERT_LIMIT}</code>"
     )
 
-    message_with_links = message_with_links.replace(symbol, monospace_symbol)
+    message_with_links = message_with_links.replace(
+        symbol,
+        monospace_symbol
+    )
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    url = (
+        f"https://api.telegram.org/bot"
+        f"{TELEGRAM_BOT_TOKEN}/sendMessage"
+    )
+
     payload = {
         'chat_id': chat_id,
         'text': message_with_links,
@@ -156,10 +195,21 @@ def send_telegram_notification(chat_id, message, symbol):
     }
 
     try:
-        response = session.post(url, json=payload, timeout=10)
+        response = session.post(
+            url,
+            json=payload,
+            timeout=10
+        )
+
         response.raise_for_status()
-        print(f"✓ Сигнал роста цены по {symbol} отправлен пользователю {chat_id}")
+
+        print(
+            f"✓ Сигнал отправлен по {symbol} "
+            f"пользователю {chat_id}"
+        )
+
         return True
+
     except Exception as e:
         print(f"✗ Ошибка отправки в TG: {repr(e)}")
         return False
@@ -170,12 +220,26 @@ def handle_telegram_updates():
 
     while True:
         try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-            params = {'timeout': 20, 'offset': last_update_id + 1}
-            response = session.get(url, params=params, timeout=25)
+            url = (
+                f"https://api.telegram.org/bot"
+                f"{TELEGRAM_BOT_TOKEN}/getUpdates"
+            )
+
+            params = {
+                'timeout': 20,
+                'offset': last_update_id + 1
+            }
+
+            response = session.get(
+                url,
+                params=params,
+                timeout=25
+            )
+
             data = response.json()
 
             if data.get('ok'):
+
                 for update in data['result']:
                     last_update_id = update['update_id']
 
@@ -184,6 +248,7 @@ def handle_telegram_updates():
 
                     message = update['message']
                     chat_id = str(message['chat']['id'])
+
                     text = message.get('text', '').strip()
                     text_lower = text.lower()
 
@@ -191,36 +256,52 @@ def handle_telegram_updates():
                         users[chat_id] = {
                             'active': True,
                             'alert_counts': {},
-                            'settings': {
-                                'min_price_rise': DEFAULT_MIN_PRICE_RISE,
-                                'max_price_rise': DEFAULT_MAX_PRICE_RISE,
-                                'min_24h_trend': DEFAULT_MIN_24H_TREND,
-                                'max_24h_trend': DEFAULT_MAX_24H_TREND,
-                                'min_24h_volume': DEFAULT_MIN_24H_VOLUME_USDT,
-                                'only_negative_funding': DEFAULT_FUNDING_FILTER_ONLY_NEGATIVE
-                            }
+                            'settings': get_default_settings()
                         }
 
-                    url_send = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+                    url_send = (
+                        f"https://api.telegram.org/bot"
+                        f"{TELEGRAM_BOT_TOKEN}/sendMessage"
+                    )
 
+                    # ==================== START ====================
                     if text_lower == '/start':
+
                         help_text = (
                             f"✅ <b>Бот мониторинга запущен!</b>\n\n"
+
                             f"⚙️ <b>Команды управления:</b>\n"
-                            f"• /settings — посмотреть текущие настройки\n"
-                            f"• /set <code>[параметр] [значение]</code> — изменить настройку\n"
+                            f"• /settings — текущие настройки\n"
+                            f"• /set — изменить настройку\n"
                             f"• /stats — статистика алертов\n\n"
-                            f"<b>Доступные параметры для /set:</b>\n"
-                            f"• <code>min_rise</code> — минимальный рост цены от Low за 5м (напр. 1.0)\n"
-                            f"• <code>max_rise</code> — максимальный рост цены от Low за 5м (напр. 1.5)\n"
-                            f"• <code>vol</code> — мин. объем за 24ч в млн $ (напр. 10)\n"
-                            f"• <code>min_trend</code> — мин. тренд 24h в % (напр. -10)\n"
-                            f"• <code>max_trend</code> — макс. тренд 24h в % (напр. 0)\n"
-                            f"• <code>funding</code> — только отрицательный фандинг (<code>on</code> / <code>off</code>)\n\n"
+
+                            f"<b>Параметры роста:</b>\n"
+                            f"• <code>min_rise</code> — минимальный рост "
+                            f"от Low (%)\n"
+                            f"• <code>max_rise</code> — максимальный рост "
+                            f"от Low (%)\n\n"
+
+                            f"<b>Параметры падения:</b>\n"
+                            f"• <code>min_drop</code> — минимальное падение "
+                            f"от High (%)\n"
+                            f"• <code>max_drop</code> — максимальное падение "
+                            f"от High (%)\n\n"
+
+                            f"<b>Общие фильтры:</b>\n"
+                            f"• <code>vol</code> — мин. объем за 24ч "
+                            f"в млн $\n"
+                            f"• <code>min_trend</code> — мин. тренд 24h\n"
+                            f"• <code>max_trend</code> — макс. тренд 24h\n"
+                            f"• <code>funding</code> — отрицательный "
+                            f"фандинг (on/off)\n\n"
+
                             f"<i>Примеры:</i>\n"
                             f"<code>/set min_rise 1.0</code>\n"
-                            f"<code>/set max_rise 1.5</code>"
+                            f"<code>/set max_rise 2.0</code>\n"
+                            f"<code>/set min_drop 1.0</code>\n"
+                            f"<code>/set max_drop 2.0</code>"
                         )
+
                         session.post(
                             url_send,
                             json={
@@ -230,9 +311,14 @@ def handle_telegram_updates():
                             }
                         )
 
+                    # ==================== SETTINGS ====================
                     elif text_lower == '/settings':
+
                         st = get_user_settings(chat_id)
-                        vol_m = st['min_24h_volume'] / 1_000_000
+
+                        vol_m = (
+                            st['min_24h_volume'] / 1_000_000
+                        )
 
                         funding_status = (
                             "🔴 Только отрицательный (< 0%)"
@@ -241,15 +327,25 @@ def handle_telegram_updates():
                         )
 
                         settings_text = (
-                            f"⚙️ <b>Текущие настройки для сигнала:</b>\n\n"
-                            f"📈 <b>Рост цены от Low (5м):</b> "
-                            f"от <code>{st['min_price_rise']}%</code> "
-                            f"до <code>{st['max_price_rise']}%</code>\n"
-                            f"📊 <b>Тренд 24h:</b> "
-                            f"от <code>{st['min_24h_trend']}%</code> "
-                            f"до <code>{st['max_24h_trend']}%</code>\n"
-                            f"💵 <b>Мин. объем 24h:</b> <code>${vol_m:.2f}M</code>\n"
-                            f"💸 <b>Фильтр фандинга:</b> {funding_status}"
+                            f"⚙️ <b>Текущие настройки:</b>\n\n"
+
+                            f"📈 <b>Рост цены от Low:</b>\n"
+                            f"От <code>{st['min_price_rise']}%</code> "
+                            f"до <code>{st['max_price_rise']}%</code>\n\n"
+
+                            f"📉 <b>Падение цены от High:</b>\n"
+                            f"От <code>{st['min_price_drop']}%</code> "
+                            f"до <code>{st['max_price_drop']}%</code>\n\n"
+
+                            f"📊 <b>Тренд 24h:</b>\n"
+                            f"От <code>{st['min_24h_trend']}%</code> "
+                            f"до <code>{st['max_24h_trend']}%</code>\n\n"
+
+                            f"💵 <b>Мин. объем 24h:</b> "
+                            f"<code>${vol_m:.2f}M</code>\n"
+
+                            f"💸 <b>Фильтр фандинга:</b> "
+                            f"{funding_status}"
                         )
 
                         session.post(
@@ -261,78 +357,154 @@ def handle_telegram_updates():
                             }
                         )
 
+                    # ==================== SET ====================
                     elif text_lower.startswith('/set'):
+
                         parts = text.split()
 
                         if len(parts) == 3:
+
                             param = parts[1].lower()
                             val_str = parts[2].lower()
+
                             st = get_user_settings(chat_id)
 
-                            if param in ['funding', 'funding_filter']:
-                                if val_str in ['on', '1', 'true', 'yes', 'вкл']:
+                            if param in [
+                                'funding',
+                                'funding_filter'
+                            ]:
+
+                                if val_str in [
+                                    'on', '1', 'true',
+                                    'yes', 'вкл'
+                                ]:
+
                                     st['only_negative_funding'] = True
+
                                     reply = (
-                                        "✅ Фильтр включен: алерты "
-                                        "<b>только с отрицательным фандингом (< 0%)</b>."
+                                        "✅ Фильтр включен: "
+                                        "<b>только отрицательный "
+                                        "фандинг (< 0%)</b>."
                                     )
-                                elif val_str in ['off', '0', 'false', 'no', 'выкл']:
+
+                                elif val_str in [
+                                    'off', '0', 'false',
+                                    'no', 'выкл'
+                                ]:
+
                                     st['only_negative_funding'] = False
+
                                     reply = (
                                         "⚪ Фильтр фандинга выключен: "
                                         "алерты приходят при любом фандинге."
                                     )
+
                                 else:
+
                                     reply = (
-                                        "❌ Для фандинга используйте: "
-                                        "<code>/set funding on</code> или "
+                                        "❌ Используйте:\n"
+                                        "<code>/set funding on</code>\n"
+                                        "или\n"
                                         "<code>/set funding off</code>"
                                     )
 
                             else:
+
                                 try:
                                     val = float(val_str)
 
-                                    if param in ['min_rise', 'min_price_rise']:
+                                    # -------- РОСТ --------
+                                    if param in [
+                                        'min_rise',
+                                        'min_price_rise'
+                                    ]:
+
                                         st['min_price_rise'] = val
+
                                         reply = (
-                                            f"✅ Минимальный рост цены от Low: "
+                                            f"✅ Минимальный рост от Low: "
                                             f"<code>{val}%</code>"
                                         )
 
-                                    elif param in ['max_rise', 'max_price_rise']:
+                                    elif param in [
+                                        'max_rise',
+                                        'max_price_rise'
+                                    ]:
+
                                         st['max_price_rise'] = val
+
                                         reply = (
-                                            f"✅ Максимальный рост цены от Low: "
+                                            f"✅ Максимальный рост от Low: "
                                             f"<code>{val}%</code>"
                                         )
 
+                                    # -------- ПАДЕНИЕ --------
+                                    elif param in [
+                                        'min_drop',
+                                        'min_price_drop'
+                                    ]:
+
+                                        st['min_price_drop'] = val
+
+                                        reply = (
+                                            f"✅ Минимальное падение от High: "
+                                            f"<code>{val}%</code>"
+                                        )
+
+                                    elif param in [
+                                        'max_drop',
+                                        'max_price_drop'
+                                    ]:
+
+                                        st['max_price_drop'] = val
+
+                                        reply = (
+                                            f"✅ Максимальное падение от High: "
+                                            f"<code>{val}%</code>"
+                                        )
+
+                                    # -------- ОБЪЕМ --------
                                     elif param in ['vol', 'volume']:
-                                        st['min_24h_volume'] = val * 1_000_000
+
+                                        st['min_24h_volume'] = (
+                                            val * 1_000_000
+                                        )
+
                                         reply = (
                                             f"✅ Мин. объем 24ч: "
                                             f"<code>${val}M</code> USDT"
                                         )
 
+                                    # -------- ТРЕНД --------
                                     elif param == 'min_trend':
+
                                         st['min_24h_trend'] = val
+
                                         reply = (
                                             f"✅ Нижняя граница тренда 24h: "
                                             f"<code>{val}%</code>"
                                         )
 
                                     elif param == 'max_trend':
+
                                         st['max_24h_trend'] = val
+
                                         reply = (
                                             f"✅ Верхняя граница тренда 24h: "
                                             f"<code>{val}%</code>"
                                         )
 
                                     else:
-                                        reply = "❌ Неизвестный параметр."
+
+                                        reply = (
+                                            "❌ Неизвестный параметр."
+                                        )
 
                                 except ValueError:
-                                    reply = "❌ Значение должно быть числом!"
+
+                                    reply = (
+                                        "❌ Значение должно быть числом!"
+                                    )
 
                             session.post(
                                 url_send,
@@ -344,31 +516,48 @@ def handle_telegram_updates():
                             )
 
                         else:
+
                             session.post(
                                 url_send,
                                 json={
                                     'chat_id': chat_id,
-                                    'text': "❌ Формат: <code>/set [параметр] [значение]</code>",
+                                    'text': (
+                                        "❌ Формат: "
+                                        "<code>/set [параметр] [значение]</code>"
+                                    ),
                                     'parse_mode': 'HTML'
                                 }
                             )
 
+                    # ==================== STATS ====================
                     elif text_lower == '/stats':
-                        counts = users.get(chat_id, {}).get('alert_counts', {})
-                        stats_text = "📊 <b>Статистика алертов за сегодня:</b>\n\n"
+
+                        counts = users.get(
+                            chat_id, {}
+                        ).get('alert_counts', {})
+
+                        stats_text = (
+                            "📊 <b>Статистика алертов за сегодня:</b>\n\n"
+                        )
 
                         if counts:
+
                             for sym, count in sorted(
                                 counts.items(),
                                 key=lambda x: x[1],
                                 reverse=True
                             )[:20]:
+
                                 stats_text += (
                                     f"• <code>{sym}</code>: "
                                     f"{count}/{DAILY_ALERT_LIMIT}\n"
                                 )
+
                         else:
-                            stats_text += "Сегодня алертов еще не было."
+
+                            stats_text += (
+                                "Сегодня алертов еще не было."
+                            )
 
                         session.post(
                             url_send,
@@ -385,22 +574,33 @@ def handle_telegram_updates():
             time.sleep(3)
 
 
+# ==================== СБРОС СТАТИСТИКИ ====================
 def check_and_reset_at_midnight():
+
     now = get_ye_time()
-    reset_time = now.replace(hour=5, minute=0, second=0, microsecond=0)
+
+    reset_time = now.replace(
+        hour=5,
+        minute=0,
+        second=0,
+        microsecond=0
+    )
 
     if now >= reset_time:
         reset_time += timedelta(days=1)
 
     while True:
+
         try:
             now = get_ye_time()
 
             if now >= reset_time:
+
                 for chat_id in users:
                     users[chat_id]['alert_counts'] = {}
 
                 print("🔄 Суточные лимиты сброшены.")
+
                 reset_time += timedelta(days=1)
 
             time.sleep(30)
@@ -411,39 +611,68 @@ def check_and_reset_at_midnight():
 
 # ==================== РАБОТА С REST API BYBIT ====================
 def fetch_tickers_data():
+
     url = "https://api.bybit.com/v5/market/tickers"
-    params = {"category": "linear"}
+
+    params = {
+        "category": "linear"
+    }
 
     try:
-        response = session.get(url, params=params, timeout=10)
+
+        response = session.get(
+            url,
+            params=params,
+            timeout=10
+        )
 
         if response.status_code == 200:
+
             data = response.json()
 
             if data.get('retCode') == 0:
                 return data['result']['list']
 
     except Exception as e:
-        print(f"✗ Ошибка обращения к Bybit REST API: {e}")
+
+        print(
+            f"✗ Ошибка обращения к Bybit REST API: {e}"
+        )
 
     return []
 
 
+# ==================== ОБРАБОТКА РЫНОЧНЫХ ДАННЫХ ====================
 def process_market_data(tickers):
+
     timestamp = int(datetime.now().timestamp())
 
     with data_lock:
+
         for ticker in tickers:
+
             symbol = ticker.get('symbol', '')
 
             if not symbol.endswith('USDT'):
                 continue
 
             try:
-                price = float(ticker.get('lastPrice', 0))
-                prev_price_24h = float(ticker.get('prevPrice24h', 0))
-                volume_24h = float(ticker.get('turnover24h', 0))
-                funding_rate_pct = float(ticker.get('fundingRate', 0)) * 100
+
+                price = float(
+                    ticker.get('lastPrice', 0)
+                )
+
+                prev_price_24h = float(
+                    ticker.get('prevPrice24h', 0)
+                )
+
+                volume_24h = float(
+                    ticker.get('turnover24h', 0)
+                )
+
+                funding_rate_pct = float(
+                    ticker.get('fundingRate', 0)
+                ) * 100
 
             except (ValueError, TypeError):
                 continue
@@ -451,10 +680,16 @@ def process_market_data(tickers):
             if price <= 0 or prev_price_24h <= 0:
                 continue
 
-            trend_24h_pct = calculate_change(prev_price_24h, price)
+            trend_24h_pct = calculate_change(
+                prev_price_24h,
+                price
+            )
 
             if symbol not in historical_data:
-                historical_data[symbol] = {'price': []}
+
+                historical_data[symbol] = {
+                    'price': []
+                }
 
             data = historical_data[symbol]
 
@@ -463,80 +698,190 @@ def process_market_data(tickers):
                 'timestamp': timestamp
             })
 
-            # Очищаем данные за пределами 5-минутного окна
+            # Очищаем данные за пределами окна
             data['price'] = [
                 x for x in data['price']
                 if timestamp - x['timestamp'] <= TIME_WINDOW
             ]
 
-            if len(data['price']) > 1:
-                # 1. Расчет роста цены от минимума за 5м
-                min_price = min(x['value'] for x in data['price'])
-                price_rise = calculate_change(min_price, price)
+            if len(data['price']) <= 1:
+                continue
 
-                last_time = last_alert_time.get(symbol, 0)
+            # ==================== LOW И HIGH ====================
 
-                for chat_id in list(users.keys()):
-                    st = get_user_settings(chat_id)
+            min_price = min(
+                x['value'] for x in data['price']
+            )
 
-                    # 1. Фильтр фандинга
+            max_price = max(
+                x['value'] for x in data['price']
+            )
+
+            # Рост от минимума
+            price_rise = calculate_change(
+                min_price,
+                price
+            )
+
+            # Падение от максимума
+            price_drop = calculate_change(
+                price,
+                max_price
+            )
+
+            # price_drop положительный при падении
+            # Например: High = 100, Price = 98
+            # Падение = 2%
+
+            # ==================== ОБРАБОТКА ПОЛЬЗОВАТЕЛЕЙ ====================
+
+            for chat_id in list(users.keys()):
+
+                st = get_user_settings(chat_id)
+
+                # 1. Фильтр фандинга
+                if (
+                    st.get('only_negative_funding', True)
+                    and funding_rate_pct >= 0
+                ):
+                    continue
+
+                # 2. Фильтр по объему
+                if volume_24h < st['min_24h_volume']:
+                    continue
+
+                # 3. Фильтр по суточному тренду
+                if not (
+                    st['min_24h_trend']
+                    <= trend_24h_pct
+                    <= st['max_24h_trend']
+                ):
+                    continue
+
+                # ==================== СИГНАЛ РОСТА ====================
+
+                min_r = min(
+                    st['min_price_rise'],
+                    st['max_price_rise']
+                )
+
+                max_r = max(
+                    st['min_price_rise'],
+                    st['max_price_rise']
+                )
+
+                if min_r <= price_rise <= max_r:
+
+                    cooldown_key = (
+                        f"{symbol}_RISE_{chat_id}"
+                    )
+
+                    last_time = last_alert_time.get(
+                        cooldown_key,
+                        0
+                    )
+
                     if (
-                        st.get('only_negative_funding', True)
-                        and funding_rate_pct >= 0
+                        timestamp - last_time
+                        >= COOLDOWN_MINUTES * 60
                     ):
-                        continue
 
-                    # 2. Фильтр по объему
-                    if volume_24h < st['min_24h_volume']:
-                        continue
+                        msg = (
+                            f"📈 <b>{symbol}</b>: Рост цены от Low!\n\n"
 
-                    # 3. Фильтр по суточному тренду
-                    if not (
-                        st['min_24h_trend']
-                        <= trend_24h_pct
-                        <= st['max_24h_trend']
+                            f"📈 <b>Рост цены от Low:</b> "
+                            f"<code>{price_rise:.2f}%</code>\n"
+
+                            f"💸 <b>Фандинг (Bybit):</b> "
+                            f"<code>{funding_rate_pct:.4f}%</code>\n"
+
+                            f"📊 <b>Тренд 24h (Bybit):</b> "
+                            f"<code>{trend_24h_pct:.2f}%</code>\n"
+
+                            f"💵 <b>Объем 24h:</b> "
+                            f"<code>${volume_24h/1_000_000:.2f}M</code>\n"
+
+                            f"⏱ <b>Окно анализа:</b> "
+                            f"{TIME_WINDOW // 60} мин."
+                        )
+
+                        threading.Thread(
+                            target=send_telegram_notification,
+                            args=(chat_id, msg, symbol),
+                            daemon=True
+                        ).start()
+
+                        last_alert_time[cooldown_key] = timestamp
+
+                # ==================== СИГНАЛ ПАДЕНИЯ ====================
+
+                min_d = min(
+                    st['min_price_drop'],
+                    st['max_price_drop']
+                )
+
+                max_d = max(
+                    st['min_price_drop'],
+                    st['max_price_drop']
+                )
+
+                if min_d <= price_drop <= max_d:
+
+                    cooldown_key = (
+                        f"{symbol}_DROP_{chat_id}"
+                    )
+
+                    last_time = last_alert_time.get(
+                        cooldown_key,
+                        0
+                    )
+
+                    if (
+                        timestamp - last_time
+                        >= COOLDOWN_MINUTES * 60
                     ):
-                        continue
 
-                    # 4. Условие роста цены от своего Low
-                    min_r = min(
-                        st['min_price_rise'],
-                        st['max_price_rise']
-                    )
-                    max_r = max(
-                        st['min_price_rise'],
-                        st['max_price_rise']
-                    )
+                        msg = (
+                            f"📉 <b>{symbol}</b>: Падение цены от High!\n\n"
 
-                    if min_r <= price_rise <= max_r:
-                        if timestamp - last_time >= (COOLDOWN_MINUTES * 60):
-                            msg = (
-                                f"📈 <b>{symbol}</b>: Рост цены от Low!\n\n"
-                                f"📈 <b>Рост цены от Low (5м):</b> "
-                                f"<code>{price_rise:.2f}%</code>\n"
-                                f"💸 <b>Фандинг (Bybit):</b> "
-                                f"<code>{funding_rate_pct:.4f}%</code>\n"
-                                f"📊 <b>Тренд 24h (Bybit):</b> "
-                                f"<code>{trend_24h_pct:.2f}%</code>\n"
-                                f"💵 <b>Объем 24h:</b> "
-                                f"<code>${volume_24h/1_000_000:.2f}M</code>\n"
-                                f"⏱ <b>Окно анализа:</b> 5 мин."
-                            )
+                            f"📉 <b>Падение цены от High:</b> "
+                            f"<code>{price_drop:.2f}%</code>\n"
 
-                            threading.Thread(
-                                target=send_telegram_notification,
-                                args=(chat_id, msg, symbol),
-                                daemon=True
-                            ).start()
+                            f"💸 <b>Фандинг (Bybit):</b> "
+                            f"<code>{funding_rate_pct:.4f}%</code>\n"
 
-                            last_alert_time[symbol] = timestamp
+                            f"📊 <b>Тренд 24h (Bybit):</b> "
+                            f"<code>{trend_24h_pct:.2f}%</code>\n"
+
+                            f"💵 <b>Объем 24h:</b> "
+                            f"<code>${volume_24h/1_000_000:.2f}M</code>\n"
+
+                            f"⏱ <b>Окно анализа:</b> "
+                            f"{TIME_WINDOW // 60} мин."
+                        )
+
+                        threading.Thread(
+                            target=send_telegram_notification,
+                            args=(chat_id, msg, symbol),
+                            daemon=True
+                        ).start()
+
+                        last_alert_time[cooldown_key] = timestamp
 
 
 # ==================== MAIN LOOP ====================
 def main():
+
     print(
-        "=== Запуск REST API Мониторинга "
-        "(Рост цены от Low за 5 минут) ==="
+        "=== Запуск REST API Мониторинга ==="
+    )
+
+    print(
+        "📈 Мониторинг роста цены от Low"
+    )
+
+    print(
+        "📉 Мониторинг падения цены от High"
     )
 
     threading.Thread(
@@ -550,6 +895,7 @@ def main():
     ).start()
 
     while True:
+
         start_time = time.time()
 
         tickers = fetch_tickers_data()
@@ -558,7 +904,12 @@ def main():
             process_market_data(tickers)
 
         elapsed = time.time() - start_time
-        sleep_time = max(1, POLL_INTERVAL - elapsed)
+
+        sleep_time = max(
+            1,
+            POLL_INTERVAL - elapsed
+        )
+
         time.sleep(sleep_time)
 
 
