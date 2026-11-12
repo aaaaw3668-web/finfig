@@ -15,16 +15,16 @@ if not TELEGRAM_BOT_TOKEN:
     exit(1)
 
 # --- Настройки условия сигнала по умолчанию ---
-DEFAULT_MIN_PRICE_RISE = 20
-DEFAULT_MAX_PRICE_RISE = 100
+DEFAULT_MIN_PRICE_RISE = 125
+DEFAULT_MAX_PRICE_RISE = 125
 
 # --- Настройки падения цены ---
-DEFAULT_MIN_PRICE_DROP = 5
-DEFAULT_MAX_PRICE_DROP = 100
+DEFAULT_MIN_PRICE_DROP = 1
+DEFAULT_MAX_PRICE_DROP = 2.5
 
 # --- Настройки диапазона тренда (24h) по умолчанию ---
-DEFAULT_MIN_24H_TREND = -25
-DEFAULT_MAX_24H_TREND = -5
+DEFAULT_MIN_24H_TREND = 5
+DEFAULT_MAX_24H_TREND = 100
 
 # --- Фильтр по суточному объему (в USDT) по умолчанию ---
 DEFAULT_MIN_24H_VOLUME_USDT = 1_000_000
