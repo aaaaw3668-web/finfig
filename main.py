@@ -1,4 +1,3 @@
-
 import json
 import os
 import re
@@ -14,25 +13,29 @@ if not TELEGRAM_BOT_TOKEN:
     print("✗ Ошибка: TELEGRAM_BOT_TOKEN не найден в переменных окружения!")
     exit(1)
 
-# --- Настройки условия сигнала по умолчанию ---
-DEFAULT_MIN_PRICE_RISE = 125
-DEFAULT_MAX_PRICE_RISE = 125
+# --- Настройки условия сигнала ---
+DEFAULT_MIN_PRICE_RISE = 1
+DEFAULT_MAX_PRICE_RISE = 2.5
 
 # --- Настройки падения цены ---
 DEFAULT_MIN_PRICE_DROP = 1
 DEFAULT_MAX_PRICE_DROP = 2.5
 
-# --- Настройки диапазона тренда (24h) по умолчанию ---
-DEFAULT_MIN_24H_TREND = 5
+# --- Положительный тренд 24h ---
+DEFAULT_MIN_24H_TREND = 10
 DEFAULT_MAX_24H_TREND = 100
 
-# --- Фильтр по суточному объему (в USDT) по умолчанию ---
+# --- Отрицательный тренд 24h ---
+DEFAULT_MIN_DOWN_24H_TREND = -100
+DEFAULT_MAX_DOWN_24H_TREND = -10
+
+# --- Фильтр объема ---
 DEFAULT_MIN_24H_VOLUME_USDT = 1_000_000
 
-# --- Фильтр отрицательного фандинга по умолчанию ---
+# --- Фильтр отрицательного фандинга ---
 DEFAULT_FUNDING_FILTER_ONLY_NEGATIVE = False
 
-# --- Параметры опроса API и контроля ---
+# --- Параметры опроса API ---
 TIME_WINDOW = 60 * 5
 POLL_INTERVAL = 5
 COOLDOWN_MINUTES = 60
@@ -54,8 +57,13 @@ users = {
             'max_price_rise': DEFAULT_MAX_PRICE_RISE,
             'min_price_drop': DEFAULT_MIN_PRICE_DROP,
             'max_price_drop': DEFAULT_MAX_PRICE_DROP,
+
             'min_24h_trend': DEFAULT_MIN_24H_TREND,
             'max_24h_trend': DEFAULT_MAX_24H_TREND,
+
+            'min_down_24h_trend': DEFAULT_MIN_DOWN_24H_TREND,
+            'max_down_24h_trend': DEFAULT_MAX_DOWN_24H_TREND,
+
             'min_24h_volume': DEFAULT_MIN_24H_VOLUME_USDT,
             'only_negative_funding': DEFAULT_FUNDING_FILTER_ONLY_NEGATIVE
         }
@@ -71,6 +79,7 @@ data_lock = threading.Lock()
 
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
+
 def get_ye_time():
     return datetime.now(timezone.utc) + timedelta(hours=5)
 
@@ -81,8 +90,13 @@ def get_default_settings():
         'max_price_rise': DEFAULT_MAX_PRICE_RISE,
         'min_price_drop': DEFAULT_MIN_PRICE_DROP,
         'max_price_drop': DEFAULT_MAX_PRICE_DROP,
+
         'min_24h_trend': DEFAULT_MIN_24H_TREND,
         'max_24h_trend': DEFAULT_MAX_24H_TREND,
+
+        'min_down_24h_trend': DEFAULT_MIN_DOWN_24H_TREND,
+        'max_down_24h_trend': DEFAULT_MAX_DOWN_24H_TREND,
+
         'min_24h_volume': DEFAULT_MIN_24H_VOLUME_USDT,
         'only_negative_funding': DEFAULT_FUNDING_FILTER_ONLY_NEGATIVE
     }
@@ -95,12 +109,11 @@ def get_user_settings(chat_id):
     if 'settings' not in users[chat_id]:
         users[chat_id]['settings'] = get_default_settings()
 
-    else:
-        defaults = get_default_settings()
+    defaults = get_default_settings()
 
-        for key, value in defaults.items():
-            if key not in users[chat_id]['settings']:
-                users[chat_id]['settings'][key] = value
+    for key, value in defaults.items():
+        if key not in users[chat_id]['settings']:
+            users[chat_id]['settings'][key] = value
 
     return users[chat_id]['settings']
 
@@ -147,6 +160,7 @@ def generate_links(symbol):
 
 
 # ==================== ТЕЛЕГРАМ БОТ ====================
+
 def send_telegram_notification(chat_id, message, symbol):
     if not can_send_alert(chat_id, symbol):
         return False
@@ -265,6 +279,7 @@ def handle_telegram_updates():
                     )
 
                     # ==================== START ====================
+
                     if text_lower == '/start':
 
                         help_text = (
@@ -275,31 +290,35 @@ def handle_telegram_updates():
                             f"• /set — изменить настройку\n"
                             f"• /stats — статистика алертов\n\n"
 
+                            f"<b>Положительный тренд:</b>\n"
+                            f"• <code>min_trend</code> — нижняя граница\n"
+                            f"• <code>max_trend</code> — верхняя граница\n"
+                            f"• Ищет только падение цены\n\n"
+
+                            f"<b>Отрицательный тренд:</b>\n"
+                            f"• <code>min_down_trend</code> — нижняя граница\n"
+                            f"• <code>max_down_trend</code> — верхняя граница\n"
+                            f"• Ищет только рост цены\n\n"
+
                             f"<b>Параметры роста:</b>\n"
-                            f"• <code>min_rise</code> — минимальный рост "
-                            f"от Low (%)\n"
-                            f"• <code>max_rise</code> — максимальный рост "
-                            f"от Low (%)\n\n"
+                            f"• <code>min_rise</code>\n"
+                            f"• <code>max_rise</code>\n\n"
 
                             f"<b>Параметры падения:</b>\n"
-                            f"• <code>min_drop</code> — минимальное падение "
-                            f"от High (%)\n"
-                            f"• <code>max_drop</code> — максимальное падение "
-                            f"от High (%)\n\n"
+                            f"• <code>min_drop</code>\n"
+                            f"• <code>max_drop</code>\n\n"
 
                             f"<b>Общие фильтры:</b>\n"
-                            f"• <code>vol</code> — мин. объем за 24ч "
-                            f"в млн $\n"
-                            f"• <code>min_trend</code> — мин. тренд 24h\n"
-                            f"• <code>max_trend</code> — макс. тренд 24h\n"
-                            f"• <code>funding</code> — отрицательный "
-                            f"фандинг (on/off)\n\n"
+                            f"• <code>vol</code> — объем в млн $\n"
+                            f"• <code>funding</code> — отрицательный фандинг on/off\n\n"
 
                             f"<i>Примеры:</i>\n"
                             f"<code>/set min_rise 1.0</code>\n"
-                            f"<code>/set max_rise 2.0</code>\n"
-                            f"<code>/set min_drop 1.0</code>\n"
-                            f"<code>/set max_drop 2.0</code>"
+                            f"<code>/set max_drop 2.0</code>\n"
+                            f"<code>/set min_trend 10</code>\n"
+                            f"<code>/set max_trend 100</code>\n"
+                            f"<code>/set min_down_trend -100</code>\n"
+                            f"<code>/set max_down_trend -10</code>"
                         )
 
                         session.post(
@@ -312,13 +331,12 @@ def handle_telegram_updates():
                         )
 
                     # ==================== SETTINGS ====================
+
                     elif text_lower == '/settings':
 
                         st = get_user_settings(chat_id)
 
-                        vol_m = (
-                            st['min_24h_volume'] / 1_000_000
-                        )
+                        vol_m = st['min_24h_volume'] / 1_000_000
 
                         funding_status = (
                             "🔴 Только отрицательный (< 0%)"
@@ -329,6 +347,16 @@ def handle_telegram_updates():
                         settings_text = (
                             f"⚙️ <b>Текущие настройки:</b>\n\n"
 
+                            f"📈 <b>Положительный тренд 24h:</b>\n"
+                            f"От <code>{st['min_24h_trend']}%</code> "
+                            f"до <code>{st['max_24h_trend']}%</code>\n"
+                            f"Ищется только падение цены\n\n"
+
+                            f"📉 <b>Отрицательный тренд 24h:</b>\n"
+                            f"От <code>{st['min_down_24h_trend']}%</code> "
+                            f"до <code>{st['max_down_24h_trend']}%</code>\n"
+                            f"Ищется только рост цены\n\n"
+
                             f"📈 <b>Рост цены от Low:</b>\n"
                             f"От <code>{st['min_price_rise']}%</code> "
                             f"до <code>{st['max_price_rise']}%</code>\n\n"
@@ -336,10 +364,6 @@ def handle_telegram_updates():
                             f"📉 <b>Падение цены от High:</b>\n"
                             f"От <code>{st['min_price_drop']}%</code> "
                             f"до <code>{st['max_price_drop']}%</code>\n\n"
-
-                            f"📊 <b>Тренд 24h:</b>\n"
-                            f"От <code>{st['min_24h_trend']}%</code> "
-                            f"до <code>{st['max_24h_trend']}%</code>\n\n"
 
                             f"💵 <b>Мин. объем 24h:</b> "
                             f"<code>${vol_m:.2f}M</code>\n"
@@ -358,6 +382,7 @@ def handle_telegram_updates():
                         )
 
                     # ==================== SET ====================
+
                     elif text_lower.startswith('/set'):
 
                         parts = text.split()
@@ -369,10 +394,7 @@ def handle_telegram_updates():
 
                             st = get_user_settings(chat_id)
 
-                            if param in [
-                                'funding',
-                                'funding_filter'
-                            ]:
+                            if param in ['funding', 'funding_filter']:
 
                                 if val_str in [
                                     'on', '1', 'true',
@@ -383,8 +405,7 @@ def handle_telegram_updates():
 
                                     reply = (
                                         "✅ Фильтр включен: "
-                                        "<b>только отрицательный "
-                                        "фандинг (< 0%)</b>."
+                                        "<b>только отрицательный фандинг (< 0%)</b>."
                                     )
 
                                 elif val_str in [
@@ -395,8 +416,7 @@ def handle_telegram_updates():
                                     st['only_negative_funding'] = False
 
                                     reply = (
-                                        "⚪ Фильтр фандинга выключен: "
-                                        "алерты приходят при любом фандинге."
+                                        "⚪ Фильтр фандинга выключен."
                                     )
 
                                 else:
@@ -414,97 +434,67 @@ def handle_telegram_updates():
                                     val = float(val_str)
 
                                     # -------- РОСТ --------
-                                    if param in [
-                                        'min_rise',
-                                        'min_price_rise'
-                                    ]:
+
+                                    if param in ['min_rise', 'min_price_rise']:
 
                                         st['min_price_rise'] = val
+                                        reply = f"✅ Минимальный рост от Low: <code>{val}%</code>"
 
-                                        reply = (
-                                            f"✅ Минимальный рост от Low: "
-                                            f"<code>{val}%</code>"
-                                        )
-
-                                    elif param in [
-                                        'max_rise',
-                                        'max_price_rise'
-                                    ]:
+                                    elif param in ['max_rise', 'max_price_rise']:
 
                                         st['max_price_rise'] = val
-
-                                        reply = (
-                                            f"✅ Максимальный рост от Low: "
-                                            f"<code>{val}%</code>"
-                                        )
+                                        reply = f"✅ Максимальный рост от Low: <code>{val}%</code>"
 
                                     # -------- ПАДЕНИЕ --------
-                                    elif param in [
-                                        'min_drop',
-                                        'min_price_drop'
-                                    ]:
+
+                                    elif param in ['min_drop', 'min_price_drop']:
 
                                         st['min_price_drop'] = val
+                                        reply = f"✅ Минимальное падение от High: <code>{val}%</code>"
 
-                                        reply = (
-                                            f"✅ Минимальное падение от High: "
-                                            f"<code>{val}%</code>"
-                                        )
-
-                                    elif param in [
-                                        'max_drop',
-                                        'max_price_drop'
-                                    ]:
+                                    elif param in ['max_drop', 'max_price_drop']:
 
                                         st['max_price_drop'] = val
-
-                                        reply = (
-                                            f"✅ Максимальное падение от High: "
-                                            f"<code>{val}%</code>"
-                                        )
+                                        reply = f"✅ Максимальное падение от High: <code>{val}%</code>"
 
                                     # -------- ОБЪЕМ --------
+
                                     elif param in ['vol', 'volume']:
 
-                                        st['min_24h_volume'] = (
-                                            val * 1_000_000
-                                        )
+                                        st['min_24h_volume'] = val * 1_000_000
+                                        reply = f"✅ Мин. объем 24ч: <code>${val}M</code> USDT"
 
-                                        reply = (
-                                            f"✅ Мин. объем 24ч: "
-                                            f"<code>${val}M</code> USDT"
-                                        )
+                                    # -------- ПОЛОЖИТЕЛЬНЫЙ ТРЕНД --------
 
-                                    # -------- ТРЕНД --------
                                     elif param == 'min_trend':
 
                                         st['min_24h_trend'] = val
-
-                                        reply = (
-                                            f"✅ Нижняя граница тренда 24h: "
-                                            f"<code>{val}%</code>"
-                                        )
+                                        reply = f"✅ Нижняя граница положительного тренда: <code>{val}%</code>"
 
                                     elif param == 'max_trend':
 
                                         st['max_24h_trend'] = val
+                                        reply = f"✅ Верхняя граница положительного тренда: <code>{val}%</code>"
 
-                                        reply = (
-                                            f"✅ Верхняя граница тренда 24h: "
-                                            f"<code>{val}%</code>"
-                                        )
+                                    # -------- ОТРИЦАТЕЛЬНЫЙ ТРЕНД --------
+
+                                    elif param in ['min_down_trend', 'min_down_24h_trend']:
+
+                                        st['min_down_24h_trend'] = val
+                                        reply = f"✅ Нижняя граница отрицательного тренда: <code>{val}%</code>"
+
+                                    elif param in ['max_down_trend', 'max_down_24h_trend']:
+
+                                        st['max_down_24h_trend'] = val
+                                        reply = f"✅ Верхняя граница отрицательного тренда: <code>{val}%</code>"
 
                                     else:
 
-                                        reply = (
-                                            "❌ Неизвестный параметр."
-                                        )
+                                        reply = "❌ Неизвестный параметр."
 
                                 except ValueError:
 
-                                    reply = (
-                                        "❌ Значение должно быть числом!"
-                                    )
+                                    reply = "❌ Значение должно быть числом!"
 
                             session.post(
                                 url_send,
@@ -530,6 +520,7 @@ def handle_telegram_updates():
                             )
 
                     # ==================== STATS ====================
+
                     elif text_lower == '/stats':
 
                         counts = users.get(
@@ -555,9 +546,7 @@ def handle_telegram_updates():
 
                         else:
 
-                            stats_text += (
-                                "Сегодня алертов еще не было."
-                            )
+                            stats_text += "Сегодня алертов еще не было."
 
                         session.post(
                             url_send,
@@ -570,11 +559,13 @@ def handle_telegram_updates():
 
             time.sleep(1)
 
-        except Exception:
+        except Exception as e:
+            print(f"Ошибка обработки Telegram updates: {e}")
             time.sleep(3)
 
 
 # ==================== СБРОС СТАТИСТИКИ ====================
+
 def check_and_reset_at_midnight():
 
     now = get_ye_time()
@@ -610,6 +601,7 @@ def check_and_reset_at_midnight():
 
 
 # ==================== РАБОТА С REST API BYBIT ====================
+
 def fetch_tickers_data():
 
     url = "https://api.bybit.com/v5/market/tickers"
@@ -635,14 +627,13 @@ def fetch_tickers_data():
 
     except Exception as e:
 
-        print(
-            f"✗ Ошибка обращения к Bybit REST API: {e}"
-        )
+        print(f"✗ Ошибка обращения к Bybit REST API: {e}")
 
     return []
 
 
 # ==================== ОБРАБОТКА РЫНОЧНЫХ ДАННЫХ ====================
+
 def process_market_data(tickers):
 
     timestamp = int(datetime.now().timestamp())
@@ -658,17 +649,9 @@ def process_market_data(tickers):
 
             try:
 
-                price = float(
-                    ticker.get('lastPrice', 0)
-                )
-
-                prev_price_24h = float(
-                    ticker.get('prevPrice24h', 0)
-                )
-
-                volume_24h = float(
-                    ticker.get('turnover24h', 0)
-                )
+                price = float(ticker.get('lastPrice', 0))
+                prev_price_24h = float(ticker.get('prevPrice24h', 0))
+                volume_24h = float(ticker.get('turnover24h', 0))
 
                 funding_rate_pct = float(
                     ticker.get('fundingRate', 0)
@@ -680,6 +663,7 @@ def process_market_data(tickers):
             if price <= 0 or prev_price_24h <= 0:
                 continue
 
+            # Суточное изменение цены
             trend_24h_pct = calculate_change(
                 prev_price_24h,
                 price
@@ -729,10 +713,6 @@ def process_market_data(tickers):
                 max_price
             )
 
-            # price_drop положительный при падении
-            # Например: High = 100, Price = 98
-            # Падение = 2%
-
             # ==================== ОБРАБОТКА ПОЛЬЗОВАТЕЛЕЙ ====================
 
             for chat_id in list(users.keys()):
@@ -746,143 +726,147 @@ def process_market_data(tickers):
                 ):
                     continue
 
-                # 2. Фильтр по объему
+                # 2. Фильтр объема
                 if volume_24h < st['min_24h_volume']:
                     continue
 
-                # 3. Фильтр по суточному тренду
-                if not (
+                # ==================== ПОЛОЖИТЕЛЬНЫЙ ТРЕНД ====================
+
+                positive_trend = (
                     st['min_24h_trend']
                     <= trend_24h_pct
                     <= st['max_24h_trend']
-                ):
-                    continue
-
-                # ==================== СИГНАЛ РОСТА ====================
-
-                min_r = min(
-                    st['min_price_rise'],
-                    st['max_price_rise']
                 )
 
-                max_r = max(
-                    st['min_price_rise'],
-                    st['max_price_rise']
-                )
+                if positive_trend:
 
-                if min_r <= price_rise <= max_r:
-
-                    cooldown_key = (
-                        f"{symbol}_RISE_{chat_id}"
+                    # При положительном тренде ищем ТОЛЬКО падение.
+                    min_d = min(
+                        st['min_price_drop'],
+                        st['max_price_drop']
                     )
 
-                    last_time = last_alert_time.get(
-                        cooldown_key,
-                        0
+                    max_d = max(
+                        st['min_price_drop'],
+                        st['max_price_drop']
                     )
 
-                    if (
-                        timestamp - last_time
-                        >= COOLDOWN_MINUTES * 60
-                    ):
+                    if min_d <= price_drop <= max_d:
 
-                        msg = (
-                            f"📈 <b>{symbol}</b>: Рост цены от Low!\n\n"
+                        cooldown_key = f"{symbol}_DROP_{chat_id}"
 
-                            f"📈 <b>Рост цены от Low:</b> "
-                            f"<code>{price_rise:.2f}%</code>\n"
-
-                            f"💸 <b>Фандинг (Bybit):</b> "
-                            f"<code>{funding_rate_pct:.4f}%</code>\n"
-
-                            f"📊 <b>Тренд 24h (Bybit):</b> "
-                            f"<code>{trend_24h_pct:.2f}%</code>\n"
-
-                            f"💵 <b>Объем 24h:</b> "
-                            f"<code>${volume_24h/1_000_000:.2f}M</code>\n"
-
-                            f"⏱ <b>Окно анализа:</b> "
-                            f"{TIME_WINDOW // 60} мин."
+                        last_time = last_alert_time.get(
+                            cooldown_key,
+                            0
                         )
 
-                        threading.Thread(
-                            target=send_telegram_notification,
-                            args=(chat_id, msg, symbol),
-                            daemon=True
-                        ).start()
+                        if (
+                            timestamp - last_time
+                            >= COOLDOWN_MINUTES * 60
+                        ):
 
-                        last_alert_time[cooldown_key] = timestamp
+                            msg = (
+                                f"📉 <b>{symbol}</b>: Падение цены от High!\n\n"
 
-                # ==================== СИГНАЛ ПАДЕНИЯ ====================
+                                f"📉 <b>Падение цены от High:</b> "
+                                f"<code>{price_drop:.2f}%</code>\n"
 
-                min_d = min(
-                    st['min_price_drop'],
-                    st['max_price_drop']
+                                f"💸 <b>Фандинг (Bybit):</b> "
+                                f"<code>{funding_rate_pct:.4f}%</code>\n"
+
+                                f"📊 <b>Положительный тренд 24h:</b> "
+                                f"<code>+{trend_24h_pct:.2f}%</code>\n"
+
+                                f"💵 <b>Объем 24h:</b> "
+                                f"<code>${volume_24h/1_000_000:.2f}M</code>\n"
+
+                                f"⏱ <b>Окно анализа:</b> "
+                                f"{TIME_WINDOW // 60} мин.\n\n"
+
+                                f"🟢 <b>Возможно, разворот в лонг</b>"
+                            )
+
+                            threading.Thread(
+                                target=send_telegram_notification,
+                                args=(chat_id, msg, symbol),
+                                daemon=True
+                            ).start()
+
+                            last_alert_time[cooldown_key] = timestamp
+
+                # ==================== ОТРИЦАТЕЛЬНЫЙ ТРЕНД ====================
+
+                negative_trend = (
+                    st['min_down_24h_trend']
+                    <= trend_24h_pct
+                    <= st['max_down_24h_trend']
                 )
 
-                max_d = max(
-                    st['min_price_drop'],
-                    st['max_price_drop']
-                )
+                if negative_trend:
 
-                if min_d <= price_drop <= max_d:
-
-                    cooldown_key = (
-                        f"{symbol}_DROP_{chat_id}"
+                    # При отрицательном тренде ищем ТОЛЬКО рост.
+                    min_r = min(
+                        st['min_price_rise'],
+                        st['max_price_rise']
                     )
 
-                    last_time = last_alert_time.get(
-                        cooldown_key,
-                        0
+                    max_r = max(
+                        st['min_price_rise'],
+                        st['max_price_rise']
                     )
 
-                    if (
-                        timestamp - last_time
-                        >= COOLDOWN_MINUTES * 60
-                    ):
+                    if min_r <= price_rise <= max_r:
 
-                        msg = (
-                            f"📉 <b>{symbol}</b>: Падение цены от High!\n\n"
+                        cooldown_key = f"{symbol}_RISE_{chat_id}"
 
-                            f"📉 <b>Падение цены от High:</b> "
-                            f"<code>{price_drop:.2f}%</code>\n"
-
-                            f"💸 <b>Фандинг (Bybit):</b> "
-                            f"<code>{funding_rate_pct:.4f}%</code>\n"
-
-                            f"📊 <b>Тренд 24h (Bybit):</b> "
-                            f"<code>{trend_24h_pct:.2f}%</code>\n"
-
-                            f"💵 <b>Объем 24h:</b> "
-                            f"<code>${volume_24h/1_000_000:.2f}M</code>\n"
-
-                            f"⏱ <b>Окно анализа:</b> "
-                            f"{TIME_WINDOW // 60} мин."
+                        last_time = last_alert_time.get(
+                            cooldown_key,
+                            0
                         )
 
-                        threading.Thread(
-                            target=send_telegram_notification,
-                            args=(chat_id, msg, symbol),
-                            daemon=True
-                        ).start()
+                        if (
+                            timestamp - last_time
+                            >= COOLDOWN_MINUTES * 60
+                        ):
 
-                        last_alert_time[cooldown_key] = timestamp
+                            msg = (
+                                f"📈 <b>{symbol}</b>: Рост цены от Low!\n\n"
+
+                                f"📈 <b>Рост цены от Low:</b> "
+                                f"<code>{price_rise:.2f}%</code>\n"
+
+                                f"💸 <b>Фандинг (Bybit):</b> "
+                                f"<code>{funding_rate_pct:.4f}%</code>\n"
+
+                                f"📊 <b>Отрицательный тренд 24h:</b> "
+                                f"<code>{trend_24h_pct:.2f}%</code>\n"
+
+                                f"💵 <b>Объем 24h:</b> "
+                                f"<code>${volume_24h/1_000_000:.2f}M</code>\n"
+
+                                f"⏱ <b>Окно анализа:</b> "
+                                f"{TIME_WINDOW // 60} мин.\n\n"
+
+                                f"🔴 <b>Возможно, разворот в шорт</b>"
+                            )
+
+                            threading.Thread(
+                                target=send_telegram_notification,
+                                args=(chat_id, msg, symbol),
+                                daemon=True
+                            ).start()
+
+                            last_alert_time[cooldown_key] = timestamp
 
 
 # ==================== MAIN LOOP ====================
+
 def main():
 
-    print(
-        "=== Запуск REST API Мониторинга ==="
-    )
+    print("=== Запуск REST API Мониторинга ===")
 
-    print(
-        "📈 Мониторинг роста цены от Low"
-    )
-
-    print(
-        "📉 Мониторинг падения цены от High"
-    )
+    print("📉 Положительный тренд +10% ... +100%: поиск падений")
+    print("📈 Отрицательный тренд -100% ... -10%: поиск роста")
 
     threading.Thread(
         target=handle_telegram_updates,
@@ -915,3 +899,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
