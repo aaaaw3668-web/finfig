@@ -22,8 +22,8 @@ DEFAULT_MIN_PRICE_DROP = 10
 DEFAULT_MAX_PRICE_DROP = 10
 
 # --- Настройки диапазона тренда (24h) по умолчанию ---
-DEFAULT_MIN_24H_TREND = -5
-DEFAULT_MAX_24H_TREND = -100
+DEFAULT_MIN_24H_TREND = -100
+DEFAULT_MAX_24H_TREND = -10
 
 # --- Фильтр по суточному объему (в USDT) по умолчанию ---
 DEFAULT_MIN_24H_VOLUME_USDT = 1_000_000
